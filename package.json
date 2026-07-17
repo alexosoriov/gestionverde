@@ -1,6 +1,6 @@
 {
-  "name": "ruta-verde",
-  "version": "0.1.0",
+  "name": "gestionverde",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -13,8 +13,7 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
-    "security:encrypt-route": "node scripts/encrypt-route-data.mjs"
+    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.21",
@@ -43,5 +42,5 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "Ruta Verde"
+  "displayName": "GestiónVerde"
 }
