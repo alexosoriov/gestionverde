@@ -1,6 +1,6 @@
 import type { Stop } from "./route-data";
 
-// Datos de demostración sin nombres, teléfonos ni direcciones reales.
+// Datos de demostración sin información personal ni direcciones reales.
 // El recorrido productivo debe cargarse desde una fuente privada (Firestore/API)
 // para no publicar información de viviendas en este repositorio público.
 const STREET_NAMES = [
