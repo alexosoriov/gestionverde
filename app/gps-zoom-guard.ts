@@ -93,17 +93,24 @@ function stablePosition(
 
   if (!likelyStationary) return position;
 
+  const stableValues = {
+    latitude: previous.coords.latitude,
+    longitude: previous.coords.longitude,
+    accuracy: Math.min(previous.coords.accuracy, position.coords.accuracy),
+    altitude: position.coords.altitude,
+    altitudeAccuracy: position.coords.altitudeAccuracy,
+    heading: previous.coords.heading ?? position.coords.heading,
+    speed: 0,
+  };
+  const stableCoords: GeolocationCoordinates = {
+    ...stableValues,
+    toJSON: () => ({ ...stableValues }),
+  };
+
   return {
     timestamp: position.timestamp,
-    coords: {
-      latitude: previous.coords.latitude,
-      longitude: previous.coords.longitude,
-      accuracy: Math.min(previous.coords.accuracy, position.coords.accuracy),
-      altitude: position.coords.altitude,
-      altitudeAccuracy: position.coords.altitudeAccuracy,
-      heading: previous.coords.heading ?? position.coords.heading,
-      speed: 0,
-    },
+    coords: stableCoords,
+    toJSON: () => ({ timestamp: position.timestamp, coords: stableCoords.toJSON() }),
   };
 }
 

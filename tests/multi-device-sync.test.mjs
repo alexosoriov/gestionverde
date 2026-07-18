@@ -14,26 +14,46 @@ class FakeStatement {
   }
 
   async all() {
-    return { results: [] };
+    return { results: [], success: true, meta: {} };
   }
 
   async first() {
-    if (this.sql.includes("SELECT payload, client_updated_at, server_updated_at FROM journey_state")) {
+    if (this.sql.includes("SELECT payload, client_updated_at, server_updated_at") && this.sql.includes("gestionverde_journeys")) {
       return this.database.journeys.get(this.values[0]) ?? null;
     }
-    if (this.sql.includes("FROM journey_state_revisions")) return null;
+    if (this.sql.includes("SELECT client_updated_at FROM gestionverde_journeys")) {
+      const row = this.database.journeys.get(this.values[0]);
+      return row ? { client_updated_at: row.client_updated_at } : null;
+    }
+    if (this.sql.includes("SELECT blocked_until FROM auth_rate_limit")) {
+      const row = this.database.rateLimits.get(this.values[0]);
+      return row ? { blocked_until: row.blocked_until } : null;
+    }
+    if (this.sql.includes("SELECT attempts, window_started FROM auth_rate_limit")) {
+      const row = this.database.rateLimits.get(this.values[0]);
+      return row ? { attempts: row.attempts, window_started: row.window_started } : null;
+    }
     return null;
   }
 
   async run() {
-    if (this.sql.startsWith("INSERT INTO journey_state")) {
+    if (this.sql.startsWith("INSERT INTO gestionverde_journeys")) {
       this.database.journeys.set(this.values[0], {
         payload: this.values[1],
         client_updated_at: this.values[2],
         server_updated_at: this.values[3],
       });
+    } else if (this.sql.startsWith("INSERT INTO auth_rate_limit")) {
+      this.database.rateLimits.set(this.values[0], {
+        attempts: this.values[1],
+        window_started: this.values[2],
+        blocked_until: this.values[3],
+        updated_at: this.values[4],
+      });
+    } else if (this.sql.startsWith("DELETE FROM auth_rate_limit")) {
+      this.database.rateLimits.delete(this.values[0]);
     }
-    return { success: true };
+    return { success: true, meta: {} };
   }
 }
 
@@ -50,7 +70,7 @@ class FakeD1 {
 
 async function loadWorker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("multi-device-secure-test", `${process.pid}-${Date.now()}-${Math.random()}`);
+  workerUrl.searchParams.set("multi-device-clean-test", `${process.pid}-${Date.now()}-${Math.random()}`);
   return (await import(workerUrl.href)).default;
 }
 
@@ -63,7 +83,6 @@ function environment(database) {
     ROUTE_USERNAME: "driver-user",
     ROUTE_PASSWORD: "driver-password",
     ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
-    ROUTE_DATA_KEY: Buffer.alloc(32, 9).toString("base64"),
   };
 }
 
@@ -85,111 +104,125 @@ function authorizedRequest(url, cookie, init = {}) {
   return new Request(url, { ...init, headers });
 }
 
-function stamp(at, deviceId, sequence = 1) {
-  return { at, deviceId, sequence };
-}
-
-function snapshot(deviceId, statuses, statusClocks, updatedAt, sequence = 1) {
-  const globalClocks = Object.fromEntries([
-    "reverse", "optimizedIds", "startedAt", "completedAt", "activity", "vehicle",
-    "lastPosition", "gpsMetrics", "routeId", "sector", "driverId",
-  ].map((field) => [field, stamp(updatedAt, deviceId, sequence)]));
+function snapshot(deviceId, records, updatedAt) {
   return {
-    version: 4,
-    journeyId: "santuario-2026-07-16",
-    statuses,
-    details: {},
-    customStops: [],
-    reverse: false,
-    optimizedIds: [],
+    version: 1,
+    routeId: "santuario-2026-07-16",
+    phase: "active",
+    records,
     startedAt: 1_000,
-    completedAt: null,
-    activity: [],
-    vehicle: "Camión",
-    lastPosition: null,
-    gpsMetrics: { actualKm: 0, movingMinutes: 0, stoppedMinutes: 0 },
+    finishedAt: null,
+    pausedAt: null,
+    pausedMs: 0,
+    position: null,
+    voiceEnabled: true,
+    deviceId,
     updatedAt,
-    sync: {
-      deviceId,
-      serverRevision: 0,
-      localSequence: sequence,
-      statusClocks,
-      detailClocks: {},
-      customStopClocks: {},
-      globalClocks,
-    },
-    auditTrail: [{
-      id: `${deviceId}:${sequence}:status`,
-      at: updatedAt,
-      deviceId,
-      scope: "status",
-      action: "actualizado",
-    }],
   };
 }
 
-async function save(worker, env, cookie, value) {
+async function save(worker, env, cookie, value, clientUpdatedAt = value.updatedAt) {
   const response = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ journeyId: value.journeyId, snapshot: value }),
+    body: JSON.stringify({
+      journeyId: value.routeId,
+      snapshot: value,
+      clientUpdatedAt,
+    }),
   }), env, context);
+  return { response, body: await response.json() };
+}
+
+async function load(worker, env, cookie, journeyId) {
+  const response = await worker.fetch(
+    authorizedRequest(`http://localhost/api/journey-state?journeyId=${journeyId}`, cookie),
+    env,
+    context,
+  );
   assert.equal(response.status, 200);
   return response.json();
 }
 
-test("two encrypted devices keep changes made to different homes", async () => {
+test("dos dispositivos conservan cambios al descargar antes de volver a guardar", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
   const cookie = await loginCookie(worker, env);
 
-  const first = await save(worker, env, cookie, snapshot("phone-a", { "01": "done" }, { "01": stamp(1_000, "phone-a") }, 1_000));
-  assert.equal(first.snapshot.statuses["01"], "done");
-  assert.equal(first.revision, 1);
+  const phoneA = snapshot("phone-a", {
+    "01": { status: "done", note: "", material: "Mixto", kilos: "5", photos: [], visitedAt: 1_000 },
+  }, 1_000);
+  const first = await save(worker, env, cookie, phoneA);
+  assert.equal(first.response.status, 200);
+  assert.equal(first.body.ok, true);
 
-  const second = await save(worker, env, cookie, snapshot("phone-b", { "02": "absent" }, { "02": stamp(2_000, "phone-b") }, 2_000));
-  assert.equal(second.snapshot.statuses["01"], "done");
-  assert.equal(second.snapshot.statuses["02"], "absent");
-  assert.equal(second.revision, 2);
-  assert.equal(second.merged, true);
-  assert.ok(second.snapshot.auditTrail.some((entry) => entry.action === "conflicto-fusionado"));
+  const downloaded = await load(worker, env, cookie, phoneA.routeId);
+  assert.equal(downloaded.snapshot.records["01"].status, "done");
 
-  const stored = database.journeys.get(second.snapshot.journeyId);
-  assert.doesNotMatch(stored.payload, /phone-a|phone-b|done|absent/);
+  const phoneB = {
+    ...downloaded.snapshot,
+    deviceId: "phone-b",
+    records: {
+      ...downloaded.snapshot.records,
+      "02": { status: "absent", note: "No estaba", material: "Mixto", kilos: "", photos: [], visitedAt: 2_000 },
+    },
+    updatedAt: 2_000,
+  };
+  const second = await save(worker, env, cookie, phoneB);
+  assert.equal(second.response.status, 200);
+
+  const final = await load(worker, env, cookie, phoneA.routeId);
+  assert.equal(final.snapshot.records["01"].status, "done");
+  assert.equal(final.snapshot.records["02"].status, "absent");
+
+  const stored = database.journeys.get(phoneA.routeId);
+  assert.match(stored.payload, /phone-b/u);
+  assert.match(stored.payload, /"done"/u);
+  assert.match(stored.payload, /"absent"/u);
+  assert.doesNotMatch(stored.payload, /secure_payload|AES-GCM/u);
 });
 
-test("newer change wins for one home without deleting other homes", async () => {
+test("un dispositivo antiguo recibe conflicto y no pisa la jornada nueva", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
   const cookie = await loginCookie(worker, env);
 
-  await save(worker, env, cookie, snapshot(
-    "phone-a",
-    { "01": "done", "03": "done" },
-    { "01": stamp(1_000, "phone-a"), "03": stamp(1_000, "phone-a") },
-    1_000,
-  ));
-  const result = await save(worker, env, cookie, snapshot(
-    "phone-b",
-    { "01": "absent" },
-    { "01": stamp(3_000, "phone-b") },
-    3_000,
-  ));
+  const current = snapshot("phone-a", {
+    "01": { status: "done", note: "", material: "Mixto", kilos: "5", photos: [], visitedAt: 3_000 },
+    "03": { status: "done", note: "", material: "Cartón", kilos: "2", photos: [], visitedAt: 3_000 },
+  }, 3_000);
+  assert.equal((await save(worker, env, cookie, current)).response.status, 200);
 
-  assert.equal(result.snapshot.statuses["01"], "absent");
-  assert.equal(result.snapshot.statuses["03"], "done");
+  const stale = snapshot("phone-b", {
+    "01": { status: "absent", note: "", material: "Mixto", kilos: "", photos: [], visitedAt: 1_000 },
+  }, 1_000);
+  const rejected = await save(worker, env, cookie, stale, 1_000);
+  assert.equal(rejected.response.status, 409);
+  assert.equal(rejected.body.conflict, true);
+
+  const final = await load(worker, env, cookie, current.routeId);
+  assert.equal(final.snapshot.records["01"].status, "done");
+  assert.equal(final.snapshot.records["03"].status, "done");
 });
 
-test("a synchronized tombstone can return a home to pending", async () => {
+test("una actualización más nueva puede devolver una vivienda a pendiente", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
   const cookie = await loginCookie(worker, env);
 
-  await save(worker, env, cookie, snapshot("phone-a", { "01": "done" }, { "01": stamp(1_000, "phone-a") }, 1_000));
-  const result = await save(worker, env, cookie, snapshot("phone-a", {}, { "01": stamp(4_000, "phone-a", 2) }, 4_000, 2));
+  const first = snapshot("phone-a", {
+    "01": { status: "done", note: "", material: "Mixto", kilos: "5", photos: [], visitedAt: 1_000 },
+  }, 1_000);
+  assert.equal((await save(worker, env, cookie, first)).response.status, 200);
 
-  assert.equal(result.snapshot.statuses["01"], undefined);
+  const second = snapshot("phone-a", {
+    "01": { status: "pending", note: "", material: "Mixto", kilos: "", photos: [], visitedAt: null },
+  }, 4_000);
+  assert.equal((await save(worker, env, cookie, second)).response.status, 200);
+
+  const final = await load(worker, env, cookie, first.routeId);
+  assert.equal(final.snapshot.records["01"].status, "pending");
 });

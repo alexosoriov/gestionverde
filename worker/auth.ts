@@ -312,7 +312,7 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
 function roleCanAccess(request: Request, role: UserRole) {
   if (role === "superadmin") return true;
   const pathname = new URL(request.url).pathname;
-  if (pathname === "/api/private-route") return true;
+  if (pathname === "/api/route") return request.method === "GET" || request.method === "HEAD";
   if (pathname === "/api/tracking") {
     if (request.method === "GET" || request.method === "HEAD") return role === "manager";
     return request.method === "POST" && role === "driver";

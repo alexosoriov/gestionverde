@@ -4,70 +4,58 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("el código público deja vacío el conjunto de paradas hasta autenticar", async () => {
+test("el repositorio público usa una ruta demo sin teléfonos ni nombres reales", async () => {
   const routeData = await read("app/route-data.ts");
+  const demoStops = await read("app/route-stops.ts");
   assert.match(routeData, /export let STOPS: Stop\[\] = \[\]/u);
-  assert.match(routeData, /Los registros reales se cargan después de autenticar/u);
-  assert.doesNotMatch(routeData, /name:\s*["'][^"']+["']\s*,\s*address:/u);
+  assert.match(demoStops, /Array\.from\(\{ length: 44 \}/u);
+  assert.match(demoStops, /Datos de demostración/u);
+  assert.doesNotMatch(demoStops, /\+?56\s*9\s*\d{4}\s*\d{4}/u);
+  assert.doesNotMatch(demoStops, /phone|telefono|teléfono/iu);
 });
 
-test("el bloque privado vive separado y exige AES-256-GCM autenticado", async () => {
-  const bridge = await read("worker/private-route-data.ts");
-  const encrypted = await read("worker/vault/sector-map.ts");
-
-  assert.match(bridge, /\.\/vault\/sector-map/u);
-  assert.doesNotMatch(bridge, /PRIVATE_ROUTE_CIPHERTEXT_B64/u);
-  assert.match(encrypted, /AES-GCM/u);
-  assert.match(encrypted, /rawKey\.byteLength !== 32/u);
-  assert.match(encrypted, /tagLength: 128/u);
-  assert.match(encrypted, /additionalData/u);
-  assert.match(encrypted, /PRIVATE_ROUTE_CIPHERTEXT_B64/u);
-  assert.doesNotMatch(encrypted, /\{\s*id:\s*["']\d+/u);
-});
-
-test("jornadas y seguimiento usan subclaves e IV aleatorio por registro", async () => {
-  const cryptoSource = await read("worker/data-crypto.ts");
-  const journeySource = await read("worker/journey-state.ts");
-  const trackingSource = await read("worker/live-tracking.ts");
-
-  assert.match(cryptoSource, /HKDF/u);
-  assert.match(cryptoSource, /AES-GCM/u);
-  assert.match(cryptoSource, /crypto\.getRandomValues\(new Uint8Array\(12\)\)/u);
-  assert.match(cryptoSource, /additionalData/u);
-  assert.match(cryptoSource, /tagLength: 128/u);
-  assert.match(journeySource, /encryptJson/u);
-  assert.match(journeySource, /decryptJson/u);
-  assert.match(trackingSource, /secure_payload/u);
-  assert.match(trackingSource, /lat=0, lng=0/u);
-  assert.match(trackingSource, /activity_json='\[\]'/u);
-});
-
-test("IndexedDB y respaldos locales están cifrados con clave no extraíble", async () => {
-  const database = await read("app/journey-db.ts");
-  const storage = await read("app/journey-storage.ts");
-
-  assert.match(database, /AES-GCM/u);
-  assert.match(database, /length: 256/u);
-  assert.match(database, /false,\s*\["encrypt", "decrypt"\]/u);
-  assert.match(database, /crypto\.getRandomValues\(new Uint8Array\(12\)\)/u);
-  assert.match(database, /writeSecureStored/u);
-  assert.match(storage, /sealLocalValue/u);
-  assert.match(storage, /readSecureStored/u);
-  assert.match(storage, /localStorage\.removeItem\(LEGACY_KEY\)/u);
-  assert.doesNotMatch(storage, /localStorage\.setItem\([^,]+,\s*JSON\.stringify\(snapshot\)\)/u);
-});
-
-test("las APIs privadas requieren sesión y clave de datos", async () => {
+test("el Worker activo no depende de AES, vault ni ROUTE_DATA_KEY", async () => {
   const worker = await read("worker/index.ts");
-  assert.match(worker, /\/api\/private-route/u);
+  assert.match(worker, /clean-operational-data/u);
+  assert.doesNotMatch(worker, /ROUTE_DATA_KEY/u);
+  assert.doesNotMatch(worker, /decryptPrivateRoute/u);
+  assert.doesNotMatch(worker, /private-route-data/u);
+  assert.doesNotMatch(worker, /\/api\/private-route/u);
+});
+
+test("las jornadas, rutas y seguimiento se guardan como JSON operativo", async () => {
+  const cleanData = await read("worker/clean-operational-data.ts");
+  assert.match(cleanData, /gestionverde_routes/u);
+  assert.match(cleanData, /gestionverde_tracking/u);
+  assert.match(cleanData, /gestionverde_journeys/u);
+  assert.match(cleanData, /gestionverde_diagnostics/u);
+  assert.match(cleanData, /JSON\.stringify/u);
+  assert.match(cleanData, /JSON\.parse/u);
+  assert.doesNotMatch(cleanData, /AES-GCM|HKDF|secure_payload/iu);
+});
+
+test("el almacenamiento del teléfono conserva estados, fotos e historial sin vault", async () => {
+  const storage = await read("app/gestionverde-storage.ts");
+  assert.match(storage, /gestionverde:journey:v1/u);
+  assert.match(storage, /gestionverde:history:v1/u);
+  assert.match(storage, /StopPhoto/u);
+  assert.match(storage, /localStorage\.setItem/u);
+  assert.match(storage, /JSON\.stringify/u);
+  assert.doesNotMatch(storage, /AES-GCM|ROUTE_DATA_KEY|vault/iu);
+});
+
+test("las APIs operativas exigen sesión y mantienen cabeceras de seguridad", async () => {
+  const worker = await read("worker/index.ts");
+  assert.match(worker, /\/api\/route/u);
   assert.match(worker, /\/api\/tracking/u);
   assert.match(worker, /\/api\/journey-state/u);
   assert.match(worker, /\/api\/road-route/u);
+  assert.match(worker, /\/api\/diagnostics/u);
   assert.match(worker, /requireSession/u);
-  assert.match(worker, /ROUTE_DATA_KEY/u);
   assert.match(worker, /Strict-Transport-Security/u);
   assert.match(worker, /Content-Security-Policy/u);
   assert.match(worker, /X-Frame-Options/u);
+  assert.match(worker, /camera=\(self\)/u);
 });
 
 test("el acceso tiene bloqueo progresivo y no revela el usuario", async () => {
@@ -83,25 +71,44 @@ test("el acceso tiene bloqueo progresivo y no revela el usuario", async () => {
   assert.doesNotMatch(page, /useState\("rutaverde"\)/u);
 });
 
-test("el navegador no guarda respuestas privadas en el caché offline", async () => {
+test("el navegador no guarda respuestas de API en el caché offline", async () => {
   const serviceWorker = await read("public/sw.js");
   assert.match(serviceWorker, /url\.pathname\.startsWith\("\/api\/"\)/u);
   assert.match(serviceWorker, /event\.respondWith\(fetch\(request\)\)/u);
 });
 
-test("la aplicación carga los datos solo después de iniciar sesión", async () => {
+test("la aplicación carga la ruta JSON limpia después de validar la sesión", async () => {
   const page = await read("app/page.tsx");
   assert.match(page, /\/api\/session/u);
-  assert.match(page, /\/api\/private-route/u);
-  assert.match(page, /installRouteData/u);
+  assert.match(page, /\/api\/route/u);
+  assert.match(page, /loadCleanRoute/u);
+  assert.match(page, /installRouteData\(await loadCleanRoute\(\)\)/u);
+  assert.match(page, /ROUTE_STOPS/u);
   assert.match(page, /type="password"/u);
+  assert.doesNotMatch(page, /\/api\/private-route/u);
+  assert.doesNotMatch(page, /descifrando el recorrido/u);
+  assert.doesNotMatch(page, /local-security-migration/u);
 });
 
-test("la separación de la bóveda no cambia el mapa ni su fuente de datos", async () => {
-  const worker = await read("worker/index.ts");
-  const routeApp = await read("app/route-app.tsx");
+test("el mapa muestra ruta azul, camión, GPS y viviendas por estado", async () => {
+  const map = await read("app/gestionverde-map.tsx");
+  assert.match(map, /color: "#1f7aff"/u);
+  assert.match(map, /truckIcon/u);
+  assert.match(map, /watchPosition/u);
+  assert.match(map, /ARRIVAL_METERS = 35/u);
+  assert.match(map, /status = records\[stop\.id\]\?\.status/u);
+  assert.match(map, /seguir camión/iu);
+});
 
-  assert.match(worker, /decryptPrivateRoute\(env\.ROUTE_DATA_KEY\)/u);
-  assert.match(worker, /return noStoreJson\(\{ stops \}\)/u);
-  assert.match(routeApp, /STOPS/u);
+test("el modo operador incluye jornada, voz, fotos, estados y reportes", async () => {
+  const app = await read("app/gestionverde-app.tsx");
+  assert.match(app, /Iniciar recorrido/u);
+  assert.match(app, /Pausar jornada/u);
+  assert.match(app, /Finalizar jornada/u);
+  assert.match(app, /SpeechSynthesisUtterance/u);
+  assert.match(app, /Tomar o agregar foto/u);
+  assert.match(app, /Retiro realizado/u);
+  assert.match(app, /marcar ausente/u);
+  assert.match(app, /Descargar CSV/u);
+  assert.match(app, /guardar PDF/iu);
 });

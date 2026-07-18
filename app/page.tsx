@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type ComponentType, type FormEvent } from "react";
 import Image from "next/image";
 import { clearRouteData, installRouteData } from "./route-data";
-import { migrateLegacyBrowserStorage } from "./local-security-migration";
+import { ROUTE_STOPS } from "./route-stops";
 
 type Phase = "checking" | "login" | "loading" | "ready" | "error";
 type UserRole = "driver" | "manager" | "superadmin";
@@ -24,6 +24,17 @@ function connectionError(fallback: string) {
     : fallback;
 }
 
+async function loadCleanRoute() {
+  try {
+    const response = await fetch("/api/route", { cache: "no-store" });
+    if (!response.ok) return ROUTE_STOPS;
+    const body = await response.json() as { stops?: unknown };
+    return Array.isArray(body.stops) && body.stops.length > 0 ? body.stops : ROUTE_STOPS;
+  } catch {
+    return ROUTE_STOPS;
+  }
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("checking");
   const [username, setUsername] = useState("");
@@ -32,27 +43,13 @@ export default function Home() {
   const [role, setRole] = useState<UserRole | null>(null);
   const [ProtectedApp, setProtectedApp] = useState<ComponentType | null>(null);
 
-  const loadPrivateApp = useCallback(async (nextRole: UserRole) => {
+  const loadApp = useCallback(async (nextRole: UserRole) => {
     setPhase("loading");
     setMessage("");
-    let response: Response;
-    try {
-      response = await fetch("/api/private-route", { cache: "no-store" });
-    } catch {
-      throw new Error(connectionError("No fue posible conectar con el servidor protegido."));
-    }
-    if (response.status === 401) {
-      clearRouteData();
-      setRole(null);
-      setPhase("login");
-      return;
-    }
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      throw new Error(body.error || "No fue posible cargar el recorrido protegido.");
-    }
-    const body = await response.json() as { stops?: unknown };
-    installRouteData(body.stops);
+
+    // El recorrido real se obtiene desde D1 como JSON limpio después de autenticar.
+    // Cuando la base todavía está vacía se usa una ruta demo sin datos personales.
+    installRouteData(await loadCleanRoute());
 
     const protectedModule = nextRole === "manager"
       ? await import("./manager-only-app")
@@ -67,7 +64,6 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    void migrateLegacyBrowserStorage();
     void fetch("/api/session", { cache: "no-store" })
       .then(async (response) => {
         if (!active) return;
@@ -77,7 +73,7 @@ export default function Home() {
         }
         const body = await response.json() as { authenticated?: boolean; role?: unknown };
         const sessionRole = normalizeRole(body.role);
-        if (body.authenticated && sessionRole) await loadPrivateApp(sessionRole);
+        if (body.authenticated && sessionRole) await loadApp(sessionRole);
         else setPhase("login");
       })
       .catch((error: unknown) => {
@@ -87,7 +83,7 @@ export default function Home() {
         setPhase("error");
       });
     return () => { active = false; };
-  }, [loadPrivateApp]);
+  }, [loadApp]);
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -107,7 +103,7 @@ export default function Home() {
       const nextRole = normalizeRole(body.role);
       if (!nextRole) throw new Error("La cuenta no tiene un rol válido configurado.");
       setPassword("");
-      await loadPrivateApp(nextRole);
+      await loadApp(nextRole);
     } catch (error) {
       const fallback = error instanceof Error ? error.message : "No fue posible iniciar sesión.";
       setMessage(connectionError(fallback));
@@ -130,7 +126,7 @@ export default function Home() {
       <>
         <div className="session-dock" aria-label={`Sesión de ${ROLE_LABELS[role]}`}>
           <span className="session-role">Sesión: {ROLE_LABELS[role]}</span>
-          <button className="logout-button" type="button" onClick={logout} aria-label="Cerrar sesión de Ruta Verde">
+          <button className="logout-button" type="button" onClick={logout} aria-label="Cerrar sesión de GestiónVerde">
             Cerrar sesión
           </button>
         </div>
@@ -143,12 +139,12 @@ export default function Home() {
     <main className="auth-screen">
       <section className="auth-card" aria-labelledby="auth-title">
         <div className="auth-brand">
-          <Image src="/icon-192.png" width={58} height={58} alt="Ruta Verde" priority unoptimized />
-          <div><span className="auth-kicker">Acceso protegido por rol</span><strong className="auth-title" id="auth-title">Ruta Verde</strong></div>
+          <Image src="/icon-192.png" width={58} height={58} alt="GestiónVerde" priority unoptimized />
+          <div><span className="auth-kicker">Acceso por rol</span><strong className="auth-title" id="auth-title">GestiónVerde</strong></div>
         </div>
 
         {phase === "checking" || phase === "loading" ? (
-          <div className="auth-status" role="status" aria-live="polite">Verificando acceso y descifrando el recorrido…</div>
+          <div className="auth-status" role="status" aria-live="polite">Preparando el recorrido…</div>
         ) : phase === "error" ? (
           <div>
             <p className="auth-error" role="alert">{message}</p>
@@ -156,7 +152,7 @@ export default function Home() {
           </div>
         ) : (
           <form className="auth-form" onSubmit={login} autoComplete="on">
-            <p className="auth-description">Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. Nombres, direcciones, notas y coordenadas permanecen cifrados.</p>
+            <p className="auth-description">Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. El recorrido se carga desde una fuente limpia y preparada para sincronización en tiempo real.</p>
             <label className="auth-field">Usuario
               <input className="auth-input" autoComplete="username" autoCapitalize="none" spellCheck={false} enterKeyHint="next" value={username} onChange={(event) => setUsername(event.target.value)} required />
             </label>
@@ -164,7 +160,7 @@ export default function Home() {
               <input className="auth-input" type="password" autoComplete="current-password" enterKeyHint="go" value={password} onChange={(event) => setPassword(event.target.value)} required />
             </label>
             {message && <p className="auth-alert" role="alert" aria-live="assertive">{message}</p>}
-            <button className="auth-submit" type="submit">Entrar a Ruta Verde</button>
+            <button className="auth-submit" type="submit">Entrar a GestiónVerde</button>
           </form>
         )}
       </section>

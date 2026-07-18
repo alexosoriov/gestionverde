@@ -31,22 +31,25 @@ test("las sesiones usan firma, cookie protegida y bloqueo persistente", async ()
 
 test("las API aplican permisos distintos según el rol", async () => {
   const auth = await read("worker/auth.ts");
+  const worker = await read("worker/index.ts");
   assert.match(auth, /pathname === "\/api\/tracking"/u);
   assert.match(auth, /role === "manager"/u);
   assert.match(auth, /request\.method === "POST" && role === "driver"/u);
   assert.match(auth, /pathname === "\/api\/journey-state"/u);
-  assert.match(auth, /status: 403/u);
+  assert.match(worker, /session\?\.role !== "superadmin"/u);
+  assert.match(worker, /status: 403/u);
 });
 
-test("la interfaz carga una aplicación diferente para cada rol", async () => {
+test("la interfaz carga una aplicación distinta para cada rol", async () => {
   const page = await read("app/page.tsx");
   const driver = await read("app/driver-app.tsx");
   const manager = await read("app/manager-only-app.tsx");
+  const superadmin = await read("app/superadmin-app.tsx");
 
   assert.match(page, /import\("\.\/manager-only-app"\)/u);
   assert.match(page, /import\("\.\/driver-app"\)/u);
-  assert.match(page, /import\("\.\/route-app"\)/u);
-  assert.match(driver, /RouteApp/u);
-  assert.match(manager, /ManagerPanel/u);
-  assert.match(manager, /Jefatura · seguimiento/u);
+  assert.match(page, /import\("\.\/superadmin-app"\)/u);
+  assert.match(driver, /GestionVerdeApp role="driver"/u);
+  assert.match(manager, /GestionVerdeApp role="manager"/u);
+  assert.match(superadmin, /GestionVerdeApp role="superadmin"/u);
 });

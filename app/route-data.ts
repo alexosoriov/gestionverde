@@ -29,7 +29,7 @@ function validStop(value: unknown): value is Stop {
 
 export function installRouteData(value: unknown) {
   if (!Array.isArray(value) || value.length === 0 || !value.every(validStop)) {
-    throw new Error("Los datos privados del recorrido son inválidos.");
+    throw new Error("Los datos del recorrido son inválidos.");
   }
   STOPS = value.map((stop) => ({ ...stop }));
 }

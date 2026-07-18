@@ -1,15 +1,13 @@
 "use client";
 
-import RouteApp from "./route-app";
-import SuperadminConsole from "./superadmin-console";
-import SuperadminRouteManager from "./superadmin-route-manager";
+import GestionVerdeApp from "./gestionverde-app";
+import GestionVerdeRouteManager from "./gestionverde-route-manager";
 
 export default function SuperadminApp() {
   return (
     <>
-      <SuperadminConsole />
-      <SuperadminRouteManager />
-      <RouteApp />
+      <GestionVerdeRouteManager />
+      <GestionVerdeApp role="superadmin" />
     </>
   );
 }
