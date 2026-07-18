@@ -6,10 +6,18 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    files: ["app/route-app.tsx", "app/page.tsx"],
+    files: [
+      "app/route-app.tsx",
+      "app/page.tsx",
+      "app/gestionverde-app.tsx",
+      "app/gestionverde-map.tsx",
+      "app/stage-one-tools.tsx",
+      "app/superadmin-console.tsx",
+    ],
     rules: {
-      // Estos controladores restauran sesión/jornada desde sistemas externos.
-      // Las actualizaciones de estado reflejan IndexedDB, D1 y la sesión del Worker.
+      // Estos controladores restauran sesión/jornada desde sistemas externos,
+      // escuchan GPS/red o reinician borradores al cambiar de vivienda.
+      // Las actualizaciones reflejan localStorage, IndexedDB, D1 y APIs del navegador.
       "react-hooks/set-state-in-effect": "off",
     },
   },
