@@ -43,6 +43,12 @@ jobs:
 
           node --test tests/*.test.mjs > test-errors.txt 2>&1
           echo "exit_code=$?" >> test-errors.txt
+
+          git ls-files | sort > repository-files.txt
+          grep -RInE "ROUTE_DATA_KEY|AES-GCM|worker/vault|private-route|data-crypto|encrypt-route" . \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next --exclude=package-lock.json \
+            > legacy-references.txt 2>&1
+          echo "grep_exit_code=$?" >> legacy-references.txt
           exit 0
 
       - name: Subir diagnóstico
@@ -54,4 +60,6 @@ jobs:
             lint-errors.txt
             build-errors.txt
             test-errors.txt
+            repository-files.txt
+            legacy-references.txt
           retention-days: 1
