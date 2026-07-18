@@ -19,35 +19,40 @@ class FakeStatement {
   }
 
   async all() {
-    if (this.sql.includes("FROM client_diagnostics")) {
-      return { results: [...this.database.diagnostics.values()].sort((a, b) => b.created_at - a.created_at) };
+    if (this.sql.includes("FROM gestionverde_diagnostics")) {
+      return {
+        results: [...this.database.diagnostics.values()].sort((a, b) => b.created_at - a.created_at),
+        success: true,
+        meta: {},
+      };
     }
-    if (this.sql.startsWith("PRAGMA table_info")) return { results: [] };
-    return { results: [] };
+    return { results: [], success: true, meta: {} };
   }
 
   async run() {
-    if (this.sql.startsWith("INSERT INTO client_diagnostics")) {
-      const [id, severity, createdAt, securePayload] = this.values;
-      this.database.diagnostics.set(id, {
-        id,
-        severity,
-        created_at: createdAt,
-        secure_payload: securePayload,
+    if (this.sql.startsWith("INSERT INTO gestionverde_diagnostics")) {
+      const [id, payload, createdAt] = this.values;
+      this.database.diagnostics.set(id, { id, payload, created_at: createdAt });
+    } else if (this.sql === "DELETE FROM gestionverde_diagnostics") {
+      this.database.diagnostics.clear();
+    } else if (this.sql.startsWith("INSERT INTO auth_rate_limit")) {
+      this.database.rateLimits.set(this.values[0], {
+        attempts: this.values[1],
+        window_started: this.values[2],
+        blocked_until: this.values[3],
+        updated_at: this.values[4],
       });
+    } else if (this.sql.startsWith("DELETE FROM auth_rate_limit")) {
+      this.database.rateLimits.delete(this.values[0]);
     }
-    if (this.sql.startsWith("DELETE FROM client_diagnostics")) {
-      for (const [id, row] of this.database.diagnostics) {
-        if (row.created_at < this.values[0]) this.database.diagnostics.delete(id);
-      }
-    }
-    return { success: true };
+    return { success: true, meta: {} };
   }
 }
 
 class FakeD1 {
   constructor() {
     this.diagnostics = new Map();
+    this.rateLimits = new Map();
   }
 
   prepare(sql) {
@@ -57,7 +62,7 @@ class FakeD1 {
 
 async function loadWorker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("hardening-test", `${process.pid}-${Date.now()}-${Math.random()}`);
+  workerUrl.searchParams.set("hardening-clean-test", `${process.pid}-${Date.now()}-${Math.random()}`);
   return (await import(workerUrl.href)).default;
 }
 
@@ -72,7 +77,6 @@ function environment(database) {
     SUPERADMIN_USERNAME: "admin-user",
     SUPERADMIN_PASSWORD: "admin-password",
     ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
-    ROUTE_DATA_KEY: Buffer.alloc(32, 11).toString("base64"),
     OPENROUTESERVICE_API_KEY: "test-ors-key",
     VEHICLE_TYPE: "delivery",
     VEHICLE_LENGTH_METERS: "6.4",
@@ -86,10 +90,10 @@ function environment(database) {
 
 const context = { waitUntil() {}, passThroughOnException() {} };
 
-async function loginCookie(worker, env, username, password) {
+async function loginCookie(worker, env, username, password, ip = "127.0.0.1") {
   const response = await worker.fetch(new Request("http://localhost/api/session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "CF-Connecting-IP": "127.0.0.1" },
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
     body: JSON.stringify({ username, password }),
   }), env, context);
   assert.equal(response.status, 200);
@@ -104,31 +108,33 @@ function authorizedRequest(url, cookie, init = {}) {
   return new Request(url, { ...init, headers });
 }
 
-test("client diagnostics remain encrypted and only management can read them", async () => {
+test("diagnósticos JSON solo pueden ser leídos por Jefatura", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
-  const driverCookie = await loginCookie(worker, env, env.ROUTE_USERNAME, env.ROUTE_PASSWORD);
-  const managerCookie = await loginCookie(worker, env, env.JEFATURA_USERNAME, env.JEFATURA_PASSWORD);
+  const driverCookie = await loginCookie(worker, env, env.ROUTE_USERNAME, env.ROUTE_PASSWORD, "192.0.2.11");
+  const managerCookie = await loginCookie(worker, env, env.JEFATURA_USERNAME, env.JEFATURA_PASSWORD, "192.0.2.12");
 
+  const payload = {
+    type: "error",
+    message: "Fallo técnico sintético",
+    stack: "Error: Fallo técnico sintético",
+    path: "/ruta",
+    online: false,
+    deviceId: "phone-a",
+    occurredAt: 1_000,
+  };
   const post = await worker.fetch(authorizedRequest("http://localhost/api/diagnostics", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "error",
-      message: "Fallo técnico privado",
-      stack: "Error: Fallo técnico privado",
-      path: "/ruta",
-      online: false,
-      deviceId: "phone-a",
-      occurredAt: 1_000,
-    }),
+    body: JSON.stringify(payload),
   }), env, context);
-  assert.equal(post.status, 201);
+  assert.equal(post.status, 200);
   assert.equal(database.diagnostics.size, 1);
   const stored = [...database.diagnostics.values()][0];
-  assert.match(stored.secure_payload, /"v":2/);
-  assert.doesNotMatch(stored.secure_payload, /Fallo técnico privado|phone-a/);
+  assert.match(stored.payload, /Fallo técnico sintético/u);
+  assert.match(stored.payload, /phone-a/u);
+  assert.doesNotMatch(stored.payload, /secure_payload|AES-GCM|"v":2/u);
 
   const driverRead = await worker.fetch(
     authorizedRequest("http://localhost/api/diagnostics", driverCookie),
@@ -144,11 +150,11 @@ test("client diagnostics remain encrypted and only management can read them", as
   );
   assert.equal(managerRead.status, 200);
   const data = await managerRead.json();
-  assert.equal(data.diagnostics[0].message, "Fallo técnico privado");
-  assert.equal(data.diagnostics[0].deviceId, "phone-a");
+  assert.equal(data.diagnostics[0].data.message, "Fallo técnico sintético");
+  assert.equal(data.diagnostics[0].data.deviceId, "phone-a");
 });
 
-test("HGV routing sends the configured vehicle dimensions", async () => {
+test("HGV routing envía las dimensiones configuradas del vehículo", async () => {
   const worker = await loadWorker();
   const env = environment(new FakeD1());
   const driverCookie = await loginCookie(worker, env, env.ROUTE_USERNAME, env.ROUTE_PASSWORD);
@@ -156,7 +162,7 @@ test("HGV routing sends the configured vehicle dimensions", async () => {
   let providerBody = null;
 
   globalThis.fetch = async (input, init) => {
-    assert.match(String(input), /openrouteservice\.org\/v2\/directions\/driving-hgv/);
+    assert.match(String(input), /openrouteservice\.org\/v2\/directions\/driving-hgv/u);
     providerBody = JSON.parse(init.body);
     return Response.json({
       features: [{
