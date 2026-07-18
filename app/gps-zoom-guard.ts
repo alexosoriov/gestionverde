@@ -102,13 +102,15 @@ function stablePosition(
     heading: previous.coords.heading ?? position.coords.heading,
     speed: 0,
   };
+  const stableCoords: GeolocationCoordinates = {
+    ...stableValues,
+    toJSON: () => ({ ...stableValues }),
+  };
 
   return {
     timestamp: position.timestamp,
-    coords: {
-      ...stableValues,
-      toJSON: () => ({ ...stableValues }),
-    },
+    coords: stableCoords,
+    toJSON: () => ({ timestamp: position.timestamp, coords: stableCoords.toJSON() }),
   };
 }
 
