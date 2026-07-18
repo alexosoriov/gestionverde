@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ChangeEvent } from "react";
+import "./gestionverde-route-manager.css";
 
 type PreviewStop = {
   id?: unknown;
