@@ -9,14 +9,6 @@ const OFFLINE_FROM = 13;
 const OFFLINE_TO = 15;
 const RESTART_AFTER = 24;
 const MANAGER_CHECKPOINTS = new Set([10, 20, 30, 41]);
-const TRACKING_COLUMNS = [
-  "id", "lat", "lng", "speed", "heading", "accuracy", "next_stop",
-  "completed", "done", "absent", "pending", "total", "kilos",
-  "route_km", "estimated_minutes", "started_at", "actual_km",
-  "moving_minutes", "stopped_minutes", "baseline_route_km",
-  "route_savings_km", "planned_drive_minutes", "activity_json",
-  "secure_payload", "status", "updated_at",
-];
 
 class FakeStatement {
   constructor(database, sql) {
@@ -31,21 +23,20 @@ class FakeStatement {
   }
 
   async all() {
-    if (this.sql.startsWith("PRAGMA table_info(live_tracking)")) {
-      return { results: TRACKING_COLUMNS.map((name) => ({ name })) };
-    }
-    if (this.sql.includes("SELECT revision, server_updated_at")) return { results: [] };
-    if (this.sql.includes("FROM journey_state") && this.sql.includes("ORDER BY server_updated_at")) return { results: [] };
-    if (this.sql.includes("FROM live_tracking") && this.sql.includes("secure_payload IS NULL")) return { results: [] };
-    return { results: [] };
+    if (this.sql.includes("FROM gestionverde_diagnostics")) return { results: [] };
+    return { results: [], success: true, meta: {} };
   }
 
   async first() {
-    if (this.sql.includes("SELECT * FROM live_tracking WHERE id")) {
+    if (this.sql.includes("SELECT payload, updated_at FROM gestionverde_tracking")) {
       return this.database.tracking.get(this.values[0]) ?? null;
     }
-    if (this.sql.includes("SELECT payload, client_updated_at, server_updated_at FROM journey_state")) {
+    if (this.sql.includes("SELECT payload, client_updated_at, server_updated_at") && this.sql.includes("gestionverde_journeys")) {
       return this.database.journeys.get(this.values[0]) ?? null;
+    }
+    if (this.sql.includes("SELECT client_updated_at FROM gestionverde_journeys")) {
+      const row = this.database.journeys.get(this.values[0]);
+      return row ? { client_updated_at: row.client_updated_at } : null;
     }
     if (this.sql.includes("SELECT blocked_until FROM auth_rate_limit")) {
       const row = this.database.rateLimits.get(this.values[0]);
@@ -59,42 +50,21 @@ class FakeStatement {
   }
 
   async run() {
-    if (this.sql.startsWith("INSERT INTO live_tracking")) {
-      const [id, status, updatedAt, securePayload] = this.values;
-      this.database.tracking.set(id, {
-        id,
-        lat: 0,
-        lng: 0,
-        speed: null,
-        heading: null,
-        accuracy: null,
-        next_stop: null,
-        completed: 0,
-        done: 0,
-        absent: 0,
-        pending: 0,
-        total: 0,
-        kilos: 0,
-        route_km: null,
-        estimated_minutes: null,
-        started_at: null,
-        actual_km: 0,
-        moving_minutes: 0,
-        stopped_minutes: 0,
-        baseline_route_km: 0,
-        route_savings_km: 0,
-        planned_drive_minutes: 0,
-        activity_json: "[]",
-        secure_payload: securePayload,
-        status,
-        updated_at: updatedAt,
+    if (this.sql.startsWith("INSERT INTO gestionverde_tracking")) {
+      this.database.tracking.set(this.values[0], {
+        payload: this.values[1],
+        updated_at: this.values[2],
       });
-    } else if (this.sql.startsWith("INSERT INTO journey_state")) {
+    } else if (this.sql.startsWith("DELETE FROM gestionverde_tracking")) {
+      this.database.tracking.delete(this.values[0]);
+    } else if (this.sql.startsWith("INSERT INTO gestionverde_journeys")) {
       this.database.journeys.set(this.values[0], {
         payload: this.values[1],
         client_updated_at: this.values[2],
         server_updated_at: this.values[3],
       });
+    } else if (this.sql.startsWith("DELETE FROM gestionverde_journeys")) {
+      this.database.journeys.delete(this.values[0]);
     } else if (this.sql.startsWith("INSERT INTO auth_rate_limit")) {
       this.database.rateLimits.set(this.values[0], {
         attempts: this.values[1],
@@ -105,7 +75,7 @@ class FakeStatement {
     } else if (this.sql.startsWith("DELETE FROM auth_rate_limit")) {
       this.database.rateLimits.delete(this.values[0]);
     }
-    return { success: true };
+    return { success: true, meta: {} };
   }
 }
 
@@ -132,7 +102,6 @@ function environment(database) {
     SUPERADMIN_USERNAME: "admin-simulation",
     SUPERADMIN_PASSWORD: "admin-password-simulation",
     ROUTE_SESSION_SECRET: "professional-route-simulation-session-secret-2026",
-    ROUTE_DATA_KEY: Buffer.alloc(32, 19).toString("base64"),
   };
 }
 
@@ -174,7 +143,7 @@ function syntheticStops() {
     const column = row % 2 === 0 ? rawColumn : 6 - rawColumn;
     return {
       id: String(index + 1).padStart(2, "0"),
-      label: `Punto de prueba ${String(index + 1).padStart(2, "0")}`,
+      label: `Punto sintético ${String(index + 1).padStart(2, "0")}`,
       lat: baseLat + row * 0.00058 + Math.sin(index * 0.7) * 0.00004,
       lng: baseLng + column * 0.00076 + Math.cos(index * 0.5) * 0.00004,
     };
@@ -191,16 +160,6 @@ function haversineKm(left, right) {
   return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function interpolate(left, right, count) {
-  return Array.from({ length: count }, (_, index) => {
-    const ratio = (index + 1) / count;
-    return {
-      lat: left.lat + (right.lat - left.lat) * ratio,
-      lng: left.lng + (right.lng - left.lng) * ratio,
-    };
-  });
-}
-
 function rounded(value, digits = 3) {
   return Number(value.toFixed(digits));
 }
@@ -212,40 +171,27 @@ function statusCounts(statuses) {
   return { done, absent, completed: done + absent, pending: TOTAL_STOPS - done - absent };
 }
 
-function makeSnapshot({
-  stops,
-  statuses,
-  details,
-  activity,
-  position,
-  distanceKm,
-  movingMinutes,
-  stoppedMinutes,
-  startedAt,
-  clientUpdatedAt,
-}) {
+function makeSnapshot({ stops, statuses, details, activity, position, distanceKm, startedAt, clientUpdatedAt }) {
   const counts = statusCounts(statuses);
   return {
-    version: 4,
-    journeyId: JOURNEY_ID,
+    version: 1,
+    routeId: JOURNEY_ID,
+    phase: counts.pending === 0 ? "finished" : "active",
     statuses: { ...statuses },
     details: structuredClone(details),
-    customStops: [],
-    reverse: false,
     optimizedIds: stops.map((stop) => stop.id),
     startedAt,
-    completedAt: counts.pending === 0 ? clientUpdatedAt : null,
+    finishedAt: counts.pending === 0 ? clientUpdatedAt : null,
     activity: structuredClone(activity),
-    vehicle: "Camión",
-    lastPosition: { lat: position.lat, lng: position.lng, accuracy: 5, at: clientUpdatedAt },
-    gpsMetrics: {
+    position: {
+      lat: position.lat,
+      lng: position.lng,
+      accuracy: 5,
+      speedKmh: 0,
+      heading: 0,
       actualKm: rounded(distanceKm),
-      movingMinutes: rounded(movingMinutes, 1),
-      stoppedMinutes: rounded(stoppedMinutes, 1),
+      updatedAt: clientUpdatedAt,
     },
-    routeId: "simulacion-profesional-41-puntos",
-    sector: "entorno-sintetico-sin-datos-personales",
-    driverId: "qa-automatizado",
     updatedAt: clientUpdatedAt,
   };
 }
@@ -263,7 +209,7 @@ async function postJourney(worker, env, cookie, snapshot) {
   const response = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ journeyId: JOURNEY_ID, snapshot }),
+    body: JSON.stringify({ journeyId: JOURNEY_ID, snapshot, clientUpdatedAt: snapshot.updatedAt }),
   }), env, context);
   assert.equal(response.status, 200);
   return response.json();
@@ -271,7 +217,7 @@ async function postJourney(worker, env, cookie, snapshot) {
 
 async function getJourney(worker, env, cookie) {
   const response = await worker.fetch(
-    authorizedRequest(`http://localhost/api/journey-state?journey=${JOURNEY_ID}`, cookie),
+    authorizedRequest(`http://localhost/api/journey-state?journeyId=${JOURNEY_ID}`, cookie),
     env,
     context,
   );
@@ -281,7 +227,7 @@ async function getJourney(worker, env, cookie) {
 
 async function getManagerTracking(worker, env, cookie) {
   const response = await worker.fetch(
-    authorizedRequest(`http://localhost/api/tracking?journey=${JOURNEY_ID}`, cookie),
+    authorizedRequest("http://localhost/api/tracking", cookie),
     env,
     context,
   );
@@ -289,7 +235,7 @@ async function getManagerTracking(worker, env, cookie) {
   return response.json();
 }
 
-test("professional simulation completes the 41-stop route from point 1 to the end", async () => {
+test("la simulación profesional completa 41 viviendas con JSON limpio", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
@@ -297,18 +243,15 @@ test("professional simulation completes the 41-stop route from point 1 to the en
   const managerCookie = await loginCookie(worker, env, env.JEFATURA_USERNAME, env.JEFATURA_PASSWORD, "192.0.2.42");
   const stops = syntheticStops();
   const startedAt = Date.now();
-  const clientClockBase = startedAt + 120_000;
 
   let statuses = {};
   let details = {};
   let activity = [];
   let currentPosition = { lat: stops[0].lat - 0.0007, lng: stops[0].lng - 0.0005 };
   let distanceKm = 0;
-  let movingMinutes = 0;
-  let stoppedMinutes = 0;
   let totalKilos = 0;
-  let gpsUpdates = 0;
   let queuedOfflineWrites = 0;
+  let networkWrites = 0;
   const checkpoints = [];
   const pointResults = [];
 
@@ -316,73 +259,32 @@ test("professional simulation completes the 41-stop route from point 1 to the en
     const stopNumber = index + 1;
     const stop = stops[index];
     const offline = stopNumber >= OFFLINE_FROM && stopNumber <= OFFLINE_TO;
-    const samples = interpolate(currentPosition, stop, 4);
-
-    for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
-      const sample = samples[sampleIndex];
-      distanceKm += haversineKm(currentPosition, sample);
-      movingMinutes += 0.35;
-      currentPosition = sample;
-      const isArrival = sampleIndex === samples.length - 1;
-
-      if (!isArrival) {
-        if (offline) {
-          queuedOfflineWrites += 1;
-          continue;
-        }
-        const counts = statusCounts(statuses);
-        await postTracking(worker, env, driverCookie, {
-          journeyId: JOURNEY_ID,
-          lat: sample.lat,
-          lng: sample.lng,
-          speed: 5.2,
-          heading: (index * 37 + sampleIndex * 11) % 360,
-          accuracy: 5,
-          nextStop: stop.label,
-          completed: counts.completed,
-          done: counts.done,
-          absent: counts.absent,
-          total: TOTAL_STOPS,
-          kilos: rounded(totalKilos, 1),
-          routeKm: rounded(distanceKm + 1.2),
-          baselineRouteKm: rounded(distanceKm + 1.8),
-          routeSavingsKm: 0.6,
-          plannedDriveMinutes: 55,
-          actualKm: rounded(distanceKm),
-          movingMinutes: rounded(movingMinutes, 1),
-          stoppedMinutes: rounded(stoppedMinutes, 1),
-          estimatedMinutes: Math.max(0, (TOTAL_STOPS - counts.completed) * 3),
-          startedAt,
-          activity,
-          status: "active",
-        });
-        gpsUpdates += 1;
-      }
-    }
+    distanceKm += haversineKm(currentPosition, stop);
+    currentPosition = { lat: stop.lat, lng: stop.lng };
 
     const visitStatus = ABSENT_STOPS.has(stopNumber) ? "absent" : "done";
     const kilos = visitStatus === "done" ? rounded(2.4 + (stopNumber % 6) * 0.55, 1) : 0;
     totalKilos += kilos;
-    stoppedMinutes += visitStatus === "done" ? 0.8 : 0.45;
     statuses = { ...statuses, [stop.id]: visitStatus };
     details = {
       ...details,
       [stop.id]: {
-        kilos: kilos ? String(kilos).replace(".", ",") : "0",
+        kilos: String(kilos),
         material: visitStatus === "done" ? "Orgánico" : "Sin retiro",
-        note: visitStatus === "done" ? `Retiro simulado ${stop.id}` : `Ausente simulado ${stop.id}`,
+        note: visitStatus === "done" ? `Retiro sintético ${stop.id}` : `Ausente sintético ${stop.id}`,
       },
     };
-    const eventAt = clientClockBase + stopNumber * 10_000;
+    const eventAt = startedAt + stopNumber * 10_000;
     activity = [{
       id: `${stop.id}-${eventAt}`,
       stopId: stop.id,
-      stopName: stop.label,
-      stopAddress: stop.label,
+      label: stop.label,
       status: visitStatus,
       at: eventAt,
+      kilos,
     }, ...activity];
 
+    const counts = statusCounts(statuses);
     const snapshot = makeSnapshot({
       stops,
       statuses,
@@ -390,12 +292,9 @@ test("professional simulation completes the 41-stop route from point 1 to the en
       activity,
       position: currentPosition,
       distanceKm,
-      movingMinutes,
-      stoppedMinutes,
       startedAt,
       clientUpdatedAt: eventAt,
     });
-    const counts = statusCounts(statuses);
 
     if (offline) {
       queuedOfflineWrites += 2;
@@ -406,27 +305,21 @@ test("professional simulation completes the 41-stop route from point 1 to the en
         lng: currentPosition.lng,
         speed: 0,
         heading: (index * 37) % 360,
-        accuracy: 4,
+        accuracy: 5,
         nextStop: stops[index + 1]?.label ?? null,
-        completed: counts.completed,
         done: counts.done,
         absent: counts.absent,
+        pending: counts.pending,
         total: TOTAL_STOPS,
         kilos: rounded(totalKilos, 1),
-        routeKm: rounded(distanceKm + 1.2),
-        baselineRouteKm: rounded(distanceKm + 1.8),
-        routeSavingsKm: 0.6,
-        plannedDriveMinutes: 55,
         actualKm: rounded(distanceKm),
-        movingMinutes: rounded(movingMinutes, 1),
-        stoppedMinutes: rounded(stoppedMinutes, 1),
-        estimatedMinutes: Math.max(0, counts.pending * 3),
+        estimatedMinutes: counts.pending * 3,
         startedAt,
-        activity: activity.slice(0, 12).map((entry) => ({ ...entry, label: entry.stopAddress, kilos: Number((details[entry.stopId]?.kilos ?? "0").replace(",", ".")) })),
+        activity: activity.slice(0, 12),
         status: counts.pending === 0 ? "finished" : "active",
       });
-      gpsUpdates += 1;
       await postJourney(worker, env, driverCookie, snapshot);
+      networkWrites += 2;
     }
 
     if (stopNumber === OFFLINE_TO) {
@@ -438,26 +331,20 @@ test("professional simulation completes the 41-stop route from point 1 to the en
         heading: 0,
         accuracy: 5,
         nextStop: stops[index + 1]?.label ?? null,
-        completed: counts.completed,
         done: counts.done,
         absent: counts.absent,
+        pending: counts.pending,
         total: TOTAL_STOPS,
         kilos: rounded(totalKilos, 1),
-        routeKm: rounded(distanceKm + 1.2),
-        baselineRouteKm: rounded(distanceKm + 1.8),
-        routeSavingsKm: 0.6,
-        plannedDriveMinutes: 55,
         actualKm: rounded(distanceKm),
-        movingMinutes: rounded(movingMinutes, 1),
-        stoppedMinutes: rounded(stoppedMinutes, 1),
         estimatedMinutes: counts.pending * 3,
         startedAt,
-        activity: activity.slice(0, 12).map((entry) => ({ ...entry, label: entry.stopAddress, kilos: Number((details[entry.stopId]?.kilos ?? "0").replace(",", ".")) })),
+        activity: activity.slice(0, 12),
         status: "active",
       });
-      gpsUpdates += 1;
       await postJourney(worker, env, driverCookie, snapshot);
-      checkpoints.push({ step: "reconexion", afterStop: stopNumber, queuedOfflineWrites, recoveredCompleted: counts.completed });
+      networkWrites += 2;
+      checkpoints.push({ step: "reconexion", afterStop: stopNumber, queuedOfflineWrites });
     }
 
     if (stopNumber === RESTART_AFTER) {
@@ -467,10 +354,8 @@ test("professional simulation completes the 41-stop route from point 1 to the en
       statuses = restored.snapshot.statuses;
       details = restored.snapshot.details;
       activity = restored.snapshot.activity;
-      currentPosition = { lat: restored.snapshot.lastPosition.lat, lng: restored.snapshot.lastPosition.lng };
-      distanceKm = restored.snapshot.gpsMetrics.actualKm;
-      movingMinutes = restored.snapshot.gpsMetrics.movingMinutes;
-      stoppedMinutes = restored.snapshot.gpsMetrics.stoppedMinutes;
+      currentPosition = { lat: restored.snapshot.position.lat, lng: restored.snapshot.position.lng };
+      distanceKm = restored.snapshot.position.actualKm;
       checkpoints.push({ step: "reinicio-aplicacion", afterStop: stopNumber, recoveredStops: Object.keys(statuses).length });
     }
 
@@ -490,7 +375,6 @@ test("professional simulation completes the 41-stop route from point 1 to the en
 
     pointResults.push({
       point: stopNumber,
-      id: stop.id,
       status: visitStatus,
       kilos,
       mode: offline ? "sin-conexion" : "en-linea",
@@ -508,7 +392,7 @@ test("professional simulation completes the 41-stop route from point 1 to the en
   assert.equal(finalCounts.done, 36);
   assert.equal(finalCounts.absent, 5);
   assert.equal(finalCounts.pending, 0);
-  assert.ok(finalJourney.snapshot.completedAt);
+  assert.ok(finalJourney.snapshot.finishedAt);
   assert.equal(finalManager.tracking.status, "finished");
   assert.equal(finalManager.tracking.done, 36);
   assert.equal(finalManager.tracking.absent, 5);
@@ -516,22 +400,21 @@ test("professional simulation completes the 41-stop route from point 1 to the en
   assert.equal(finalManager.tracking.next_stop, null);
   assert.equal(JSON.parse(finalManager.tracking.activity_json).length, 12);
   assert.ok(distanceKm > 2);
-  assert.ok(gpsUpdates >= 150);
-  assert.ok(queuedOfflineWrites >= 15);
+  assert.ok(networkWrites > 60);
+  assert.equal(queuedOfflineWrites, 6);
 
-  const rawTracking = database.tracking.get(JOURNEY_ID);
+  const rawTracking = database.tracking.get("current");
   const rawJourney = database.journeys.get(JOURNEY_ID);
-  assert.equal(rawTracking.lat, 0);
-  assert.equal(rawTracking.lng, 0);
-  assert.equal(rawTracking.next_stop, null);
-  assert.equal(rawTracking.activity_json, "[]");
-  assert.match(rawTracking.secure_payload, /"v":2/);
-  assert.match(rawJourney.payload, /"v":2/);
-  assert.doesNotMatch(rawTracking.secure_payload, /Punto de prueba|Retiro simulado|Ausente simulado/);
-  assert.doesNotMatch(rawJourney.payload, /Punto de prueba|Retiro simulado|Ausente simulado/);
+  assert.ok(rawTracking);
+  assert.ok(rawJourney);
+  assert.match(rawTracking.payload, /"done":36/u);
+  assert.match(rawTracking.payload, /Punto sintético/u);
+  assert.match(rawJourney.payload, /Retiro sintético/u);
+  assert.doesNotMatch(rawTracking.payload, /secure_payload|AES-GCM|"v":2/u);
+  assert.doesNotMatch(rawJourney.payload, /secure_payload|AES-GCM|"v":2/u);
 
   const driverCannotReadManagerTracking = await worker.fetch(
-    authorizedRequest(`http://localhost/api/tracking?journey=${JOURNEY_ID}`, driverCookie),
+    authorizedRequest("http://localhost/api/tracking", driverCookie),
     env,
     context,
   );
@@ -545,19 +428,17 @@ test("professional simulation completes the 41-stop route from point 1 to the en
   assert.equal(managerCannotWriteJourney.status, 403);
 
   const report = {
-    test: "Ruta Verde · simulación profesional completa",
-    environment: "41 puntos sintéticos; no utiliza nombres, direcciones ni coordenadas personales",
+    test: "GestiónVerde · simulación profesional completa",
+    environment: "41 puntos sintéticos sin datos personales",
     result: "APROBADO",
     totals: {
       stops: TOTAL_STOPS,
       done: finalCounts.done,
       absent: finalCounts.absent,
       pending: finalCounts.pending,
-      gpsUpdates,
+      networkWrites,
       queuedOfflineWrites,
       actualKm: rounded(distanceKm),
-      movingMinutes: rounded(movingMinutes, 1),
-      stoppedMinutes: rounded(stoppedMinutes, 1),
       kilos: rounded(totalKilos, 1),
     },
     scenarios: {
@@ -567,7 +448,7 @@ test("professional simulation completes the 41-stop route from point 1 to the en
       offlineToStop: OFFLINE_TO,
       restartAfterStop: RESTART_AFTER,
       managerCheckpoints: [...MANAGER_CHECKPOINTS],
-      encryptedAtRest: true,
+      cleanJsonAtRest: true,
       roleSeparation: true,
     },
     checkpoints,
