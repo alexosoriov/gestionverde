@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState, type ComponentType, type FormEvent } 
 import Image from "next/image";
 import { clearRouteData, installRouteData } from "./route-data";
 import { ROUTE_STOPS } from "./route-stops";
-import { migrateLegacyBrowserStorage } from "./local-security-migration";
 
 type Phase = "checking" | "login" | "loading" | "ready" | "error";
 type UserRole = "driver" | "manager" | "superadmin";
@@ -25,6 +24,17 @@ function connectionError(fallback: string) {
     : fallback;
 }
 
+async function loadCleanRoute() {
+  try {
+    const response = await fetch("/api/route", { cache: "no-store" });
+    if (!response.ok) return ROUTE_STOPS;
+    const body = await response.json() as { stops?: unknown };
+    return Array.isArray(body.stops) && body.stops.length > 0 ? body.stops : ROUTE_STOPS;
+  } catch {
+    return ROUTE_STOPS;
+  }
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("checking");
   const [username, setUsername] = useState("");
@@ -37,9 +47,9 @@ export default function Home() {
     setPhase("loading");
     setMessage("");
 
-    // GestiónVerde ya no depende de AES, worker/vault ni ROUTE_DATA_KEY.
-    // La UI recibe una fuente de datos limpia que luego podrá venir desde Firestore.
-    installRouteData(ROUTE_STOPS);
+    // El recorrido real se obtiene desde D1 como JSON limpio después de autenticar.
+    // Cuando la base todavía está vacía se usa una ruta demo sin datos personales.
+    installRouteData(await loadCleanRoute());
 
     const protectedModule = nextRole === "manager"
       ? await import("./manager-only-app")
@@ -54,7 +64,6 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    void migrateLegacyBrowserStorage();
     void fetch("/api/session", { cache: "no-store" })
       .then(async (response) => {
         if (!active) return;
