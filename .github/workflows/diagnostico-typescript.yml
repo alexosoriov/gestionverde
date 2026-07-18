@@ -1,0 +1,42 @@
+name: Diagnóstico TypeScript
+
+on:
+  push:
+    branches:
+      - feature/gestionverde-2-base
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci --silent
+
+      - name: Capturar errores de TypeScript
+        shell: bash
+        run: |
+          set +e
+          npx tsc --noEmit --pretty false > typescript-errors.txt 2>&1
+          status=$?
+          echo "exit_code=$status" >> typescript-errors.txt
+          exit 0
+
+      - name: Subir diagnóstico
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-errors
+          path: typescript-errors.txt
+          retention-days: 1
