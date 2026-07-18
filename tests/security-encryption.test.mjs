@@ -77,13 +77,17 @@ test("el navegador no guarda respuestas de API en el caché offline", async () =
   assert.match(serviceWorker, /event\.respondWith\(fetch\(request\)\)/u);
 });
 
-test("la aplicación instala la ruta limpia después de validar la sesión", async () => {
+test("la aplicación carga la ruta JSON limpia después de validar la sesión", async () => {
   const page = await read("app/page.tsx");
   assert.match(page, /\/api\/session/u);
-  assert.match(page, /installRouteData\(ROUTE_STOPS\)/u);
+  assert.match(page, /\/api\/route/u);
+  assert.match(page, /loadCleanRoute/u);
+  assert.match(page, /installRouteData\(await loadCleanRoute\(\)\)/u);
+  assert.match(page, /ROUTE_STOPS/u);
   assert.match(page, /type="password"/u);
   assert.doesNotMatch(page, /\/api\/private-route/u);
   assert.doesNotMatch(page, /descifrando el recorrido/u);
+  assert.doesNotMatch(page, /local-security-migration/u);
 });
 
 test("el mapa muestra ruta azul, camión, GPS y viviendas por estado", async () => {
