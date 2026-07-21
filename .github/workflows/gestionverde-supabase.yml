@@ -1,0 +1,39 @@
+name: Validar GestiónVerde Supabase
+
+on:
+  pull_request:
+    paths:
+      - "gestionverde-supabase/**"
+      - "supabase/**"
+      - ".github/workflows/gestionverde-supabase.yml"
+  push:
+    branches: [main]
+    paths:
+      - "gestionverde-supabase/**"
+      - "supabase/**"
+      - ".github/workflows/gestionverde-supabase.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: gestionverde-supabase
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Instalar dependencias
+        run: npm install --no-audit --no-fund
+
+      - name: Compilar prototipo
+        run: npm run build
