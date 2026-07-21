@@ -1,0 +1,7 @@
+-- Evita que clientes invoquen directamente la función SECURITY DEFINER.
+revoke execute on function public.handle_new_user() from public;
+revoke execute on function public.handle_new_user() from anon;
+revoke execute on function public.handle_new_user() from authenticated;
+
+alter function public.handle_new_user()
+set search_path = public, pg_temp;
